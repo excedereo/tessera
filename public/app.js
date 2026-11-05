@@ -379,7 +379,10 @@ function fileSize(bytes) {
 function filesPanel(app) {
   const url = `/api/apps/${app.id}/files`
   const join = (base, name) => (base ? `${base}/${name}` : name)
-  const query = target => `?path=${encodeURIComponent(target)}`
+  const hasCode = app.source !== 'image'
+  let scope = hasCode ? 'code' : 'data'
+  const query = target => `?scope=${scope}&path=${encodeURIComponent(target)}`
+  const readOnly = () => scope === 'code' && app.source === 'git'
   let dir = ''
   let loaded = false
   let token = 0
@@ -411,7 +414,7 @@ function filesPanel(app) {
   function drawCrumbs() {
     const parts = dir ? dir.split('/') : []
     crumbs.replaceChildren(
-      el('button', { className: 'quiet', textContent: app.dataPath, onclick: () => load('') }),
+      el('button', { className: 'quiet', textContent: scope === 'code' ? 'код' : app.dataPath, onclick: () => load('') }),
       ...parts.flatMap((part, index) => [
         el('span', { className: 'muted', textContent: '/' }),
         el('button', { className: 'quiet', textContent: part, onclick: () => load(parts.slice(0, index + 1).join('/')) }),
@@ -427,7 +430,7 @@ function filesPanel(app) {
       disabled: entry.type === 'link',
       onclick: () => (isDir ? load(target) : openFile(target, entry)),
     }, icon(isDir ? 'Folder2' : entry.type === 'link' ? 'Link2' : 'DocumentText'), el('span', { textContent: entry.name }))
-    const remove = el('button', {
+    const remove = readOnly() ? el('span') : el('button', {
       className: 'icon-button',
       title: 'Удалить',
       ariaLabel: `Удалить ${entry.name}`,
@@ -446,10 +449,27 @@ function filesPanel(app) {
     const download = entry.type === 'file'
       ? el('a', { className: 'icon-link', href: `${url}/download${query(target)}`, title: 'Скачать', ariaLabel: `Скачать ${entry.name}` }, icon('Import'))
       : el('span')
+    const unpack = scope === 'data' && entry.type === 'file' && entry.name.toLowerCase().endsWith('.zip')
+      ? el('button', {
+        className: 'icon-button',
+        title: 'Распаковать',
+        ariaLabel: `Распаковать ${entry.name}`,
+        onclick: async () => {
+          try {
+            await api(`${url}/unzip`, { json: { path: target } })
+            toast(`${entry.name} распакован`)
+            load()
+          } catch (err) {
+            toast(err.message, true)
+          }
+        },
+      }, icon('FolderOpen'))
+      : el('span')
     return el('div', { className: 'file-row' },
       open,
       el('span', { className: 'mono muted', textContent: isDir ? '' : fileSize(entry.size) }),
       el('span', { className: 'mono muted', textContent: new Date(entry.mtime).toLocaleString('ru', { dateStyle: 'short', timeStyle: 'short' }) }),
+      unpack,
       download,
       remove)
   }
@@ -464,8 +484,8 @@ function filesPanel(app) {
     if (file.tooLarge) return toast(`Файл ${fileSize(file.size)} слишком большой для редактора, скачай его`, true)
     if (file.binary) return toast('Это не текстовый файл, скачай его', true)
 
-    const area = el('textarea', { spellcheck: false, value: file.text, ariaLabel: entry.name })
-    const save = el('button', { className: 'primary', disabled: true, textContent: 'Сохранить' })
+    const area = el('textarea', { spellcheck: false, value: file.text, ariaLabel: entry.name, readOnly: readOnly() })
+    const save = el('button', { className: 'primary', disabled: true, hidden: readOnly(), textContent: 'Сохранить' })
     const close = async () => {
       if (!save.disabled && !await askConfirm('Закрыть без сохранения?', 'Изменения в файле пропадут', 'Закрыть')) return
       editor.hidden = true
@@ -475,8 +495,8 @@ function filesPanel(app) {
     const write = () => {
       if (save.disabled) return
       save.disabled = true
-      api(`${url}/content`, { method: 'PUT', json: { path: target, text: area.value } })
-        .then(() => toast('Файл сохранён. Приложение может прочитать его только после перезапуска'))
+      api(`${url}/content${query('')}`, { method: 'PUT', json: { path: target, text: area.value } })
+        .then(() => toast(scope === 'code' ? 'Сохранено. Чтобы заработало, нажми «Пересобрать»' : 'Файл сохранён. Приложение прочитает его после перезапуска'))
         .catch(err => {
           save.disabled = false
           toast(err.message, true)
@@ -492,7 +512,7 @@ function filesPanel(app) {
     save.onclick = write
     editor.replaceChildren(
       el('div', { className: 'file-tools' },
-        el('span', { className: 'file-title mono', textContent: `${app.dataPath}/${target}`.replace('//', '/') }),
+        el('span', { className: 'file-title mono', textContent: scope === 'code' ? target : `${app.dataPath}/${target}`.replace('//', '/') }),
         el('button', { className: 'quiet', textContent: 'Закрыть', onclick: close }),
         save),
       area)
@@ -502,13 +522,14 @@ function filesPanel(app) {
   }
 
   async function uploadAll(list) {
+    if (readOnly()) return toast('Код приходит из репозитория, меняй его там', true)
     for (const file of list) {
       const data = new FormData()
       data.set('path', dir)
       data.set('file', file)
       try {
-        await api(`${url}/upload`, { method: 'POST', body: data })
-        toast(`${file.name} загружено`)
+        const { unpacked } = await api(`${url}/upload${query('')}`, { method: 'POST', body: data })
+        toast(unpacked ? `${file.name} распакован. Чтобы заработало, нажми «Пересобрать»` : `${file.name} загружено`)
       } catch (err) {
         toast(`${file.name}: ${err.message}`, true)
       }
@@ -531,23 +552,42 @@ function filesPanel(app) {
     uploadAll([...event.dataTransfer.files])
   }
 
+  const folderButton = el('button', {
+    className: 'quiet',
+    onclick: async () => {
+      const name = await askName('Новая папка', 'Создать')
+      if (!name) return
+      try {
+        await api(`${url}/folder${query('')}`, { json: { path: dir, name } })
+        load()
+      } catch (err) {
+        toast(err.message, true)
+      }
+    },
+  }, icon('FolderAdd'), 'Папка')
+  const uploadButton = el('button', { className: 'quiet', onclick: () => picker.click() }, icon('DocumentUpload'), 'Загрузить')
+  const scopeTabs = ['code', 'data'].map(key => el('button', {
+    className: key === scope ? 'active' : '',
+    textContent: key === 'code' ? 'Код' : 'Данные',
+    onclick: () => {
+      scope = key
+      for (const button of scopeTabs) button.classList.toggle('active', button.textContent === (key === 'code' ? 'Код' : 'Данные'))
+      syncTools()
+      load('')
+    },
+  }))
+  const syncTools = () => {
+    folderButton.hidden = uploadButton.hidden = readOnly()
+    uploadButton.title = scope === 'code' ? 'Zip распакуется поверх, одноимённые файлы заменятся' : ''
+  }
+  syncTools()
+
   browser.append(
     el('div', { className: 'file-tools' },
+      hasCode && el('div', { className: 'scope-tabs' }, ...scopeTabs),
       crumbs,
-      el('button', {
-        className: 'quiet',
-        onclick: async () => {
-          const name = await askName('Новая папка', 'Создать')
-          if (!name) return
-          try {
-            await api(`${url}/folder`, { json: { path: dir, name } })
-            load()
-          } catch (err) {
-            toast(err.message, true)
-          }
-        },
-      }, icon('FolderAdd'), 'Папка'),
-      el('button', { className: 'quiet', onclick: () => picker.click() }, icon('DocumentUpload'), 'Загрузить'),
+      folderButton,
+      uploadButton,
       picker),
     rows)
 
@@ -672,18 +712,7 @@ function mountApp(app) {
   }, icon('Trash'), 'Удалить')
 
   const deploy = body => api(`/api/apps/${id}/deploy`, { method: 'POST', body }).then(() => showBuild(id, log, paintLogs, logTitle))
-  const redeploy = el('button', {
-    onclick: () => {
-      if (app.source !== 'upload') return busy(redeploy, () => deploy(new FormData()))
-      const picker = el('input', { type: 'file', accept: '.zip' })
-      picker.onchange = () => {
-        const data = new FormData()
-        data.append('archive', picker.files[0])
-        busy(redeploy, () => deploy(data))
-      }
-      picker.click()
-    },
-  }, icon(app.source === 'upload' ? 'DocumentUpload' : 'Refresh2'), app.source === 'upload' ? 'Новый архив' : 'Пересобрать')
+  const redeploy = el('button', { onclick: () => busy(redeploy, () => deploy(new FormData())) }, icon('Refresh2'), 'Пересобрать')
 
   const command = (action, label, name, className = '') => {
     const button = el('button', {

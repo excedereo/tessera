@@ -307,13 +307,16 @@ details[open] > summary { margin-bottom: 12px; }
 .file-tools { display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 8px; border-bottom: 1px solid var(--line); }
 .file-tools button { height: 32px; }
 .file-title { min-width: 0; margin-right: auto; padding-left: 8px; overflow: hidden; color: var(--text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.scope-tabs { display: flex; flex: none; gap: 2px; margin-right: 8px; padding: 2px; background: var(--deep); border-radius: 8px; }
+.scope-tabs button { height: 28px; padding: 0 8px; background: none; border-color: transparent; border-radius: 6px; color: var(--text-2); font-size: 13px; }
+.scope-tabs button.active { background: var(--raised); color: var(--text); }
 .crumbs { display: flex; align-items: center; gap: 0; min-width: 0; margin-right: auto; overflow-x: auto; }
 .crumbs button { flex: none; padding: 0 8px; font: 12px/16px var(--mono); }
 .file-rows { flex: 1; min-height: 0; padding: 4px 8px; overflow-y: auto; }
 .file-note { padding: 32px 16px; color: var(--muted); text-align: center; }
 .file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px 124px 28px 28px;
+  grid-template-columns: minmax(0, 1fr) 84px 124px 28px 28px 28px;
   align-items: center;
   gap: 8px;
   min-height: 36px;
@@ -335,7 +338,7 @@ details[open] > summary { margin-bottom: 12px; }
 }
 
 @media (max-width: 760px) {
-  .file-row { grid-template-columns: minmax(0, 1fr) 64px 28px 28px; }
+  .file-row { grid-template-columns: minmax(0, 1fr) 64px 28px 28px 28px; }
   .file-row > .mono:nth-child(3) { display: none; }
   .file-tools button:not(.quiet) { padding: 0 8px; }
 }

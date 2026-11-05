@@ -6,17 +6,16 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import multer from 'multer'
-import AdmZip from 'adm-zip'
 import { WebSocketServer } from 'ws'
 import * as store from './store.js'
 import * as engine from './docker.js'
 import * as files from './files.js'
+import * as code from './code.js'
 
 const HOST = process.env.TESSERA_HOST || '127.0.0.1'
 const PORT = Number(process.env.TESSERA_PORT || 8030)
 const SESSION_MS = 7 * 24 * 3600 * 1000
 const MAX_UPLOAD = 200 * 1024 * 1024
-const MAX_UNPACKED = 1024 * 1024 * 1024
 const BUILD_LOG_LIMIT = 200_000
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
@@ -153,32 +152,6 @@ function checkDataPath(dataPath) {
 
 const IMAGE_RE = /^[a-z0-9][a-z0-9._/:@-]*$/i
 
-function unpackZip(file, dir) {
-  const zip = new AdmZip(file)
-  const entries = zip.getEntries()
-  const unpacked = entries.reduce((sum, e) => sum + e.header.size, 0)
-  if (unpacked > MAX_UNPACKED) throw new HttpError(400, 'Архив слишком большой после распаковки')
-  const root = path.resolve(dir)
-  for (const entry of entries) {
-    const target = path.resolve(root, entry.entryName)
-    if (target !== root && !target.startsWith(root + path.sep)) {
-      throw new HttpError(400, `Опасный путь в архиве: ${entry.entryName}`)
-    }
-    if (entry.isDirectory) {
-      fs.mkdirSync(target, { recursive: true })
-    } else {
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.writeFileSync(target, entry.getData())
-    }
-  }
-  const items = fs.readdirSync(root)
-  if (items.length === 1 && fs.statSync(path.join(root, items[0])).isDirectory()) {
-    const nested = path.join(root, items[0])
-    for (const name of fs.readdirSync(nested)) fs.renameSync(path.join(nested, name), path.join(root, name))
-    fs.rmdirSync(nested)
-  }
-}
-
 function gitClone(url, dir, onLine) {
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['clone', '--depth', '1', '--', url, dir], {
@@ -205,7 +178,7 @@ async function deploy(appRecord, build, zipPath) {
       } else if (zipPath) {
         fs.rmSync(srcDir, { recursive: true, force: true })
         fs.mkdirSync(srcDir, { recursive: true })
-        unpackZip(zipPath, srcDir)
+        code.unpackZip(zipPath, srcDir)
       }
       Object.assign(appRecord, await engine.buildApp(appRecord, srcDir, onLine))
       store.putApp(appRecord)
@@ -360,42 +333,64 @@ app.get('/api/apps/:id/build', (req, res) => {
   res.json(build || { running: false, error: null, log: '' })
 })
 
-app.get('/api/apps/:id/files', async (req, res) => {
+// scope=code это исходники приложения, всё остальное том с данными
+function fileScope(req, { write = false } = {}) {
   const record = requireApp(req)
-  res.json({ root: record.dataPath, entries: await files.list(record.id, req.query.path) })
+  if (req.query.scope !== 'code') return { record, backend: files, isCode: false }
+  if (record.source === 'image') throw new HttpError(404, 'У готового образа нет кода')
+  if (write && record.source === 'git') throw new HttpError(409, 'Код приходит из репозитория, меняй его там')
+  if (write && builds.get(record.id)?.running) throw new HttpError(409, 'Сначала дождись конца сборки')
+  return { record, backend: code, isCode: true }
+}
+
+app.get('/api/apps/:id/files', async (req, res) => {
+  const { record, backend } = fileScope(req)
+  res.json({ entries: await backend.list(record.id, req.query.path) })
 })
 
 app.get('/api/apps/:id/files/content', async (req, res) => {
-  res.json(await files.read(requireApp(req).id, req.query.path))
+  const { record, backend } = fileScope(req)
+  res.json(await backend.read(record.id, req.query.path))
 })
 
 app.put('/api/apps/:id/files/content', async (req, res) => {
-  await files.writeText(requireApp(req).id, req.body?.path, req.body?.text ?? '')
+  const { record, backend } = fileScope(req, { write: true })
+  await backend.writeText(record.id, req.body?.path, req.body?.text ?? '')
   res.json({ ok: true })
 })
 
 app.get('/api/apps/:id/files/download', async (req, res) => {
-  await files.download(requireApp(req).id, req.query.path, res)
+  const { record, backend } = fileScope(req)
+  await backend.download(record.id, req.query.path, res)
 })
 
 app.post('/api/apps/:id/files/upload', upload.single('file'), async (req, res) => {
   try {
-    const record = requireApp(req)
+    const { record, backend, isCode } = fileScope(req, { write: true })
     if (!req.file) throw new HttpError(400, 'Нужен файл')
-    await files.uploadFile(record.id, req.body.path, req.file.originalname, req.file.path)
-    res.json({ ok: true })
+    const unpack = isCode && req.file.originalname.toLowerCase().endsWith('.zip')
+    if (unpack) code.unpackOver(record.id, req.body.path, req.file.path)
+    else await backend.uploadFile(record.id, req.body.path, req.file.originalname, req.file.path)
+    res.json({ ok: true, unpacked: unpack })
   } finally {
     if (req.file) fs.rmSync(req.file.path, { force: true })
   }
 })
 
 app.post('/api/apps/:id/files/folder', async (req, res) => {
-  await files.makeDir(requireApp(req).id, req.body?.path, req.body?.name)
+  const { record, backend } = fileScope(req, { write: true })
+  await backend.makeDir(record.id, req.body?.path, req.body?.name)
+  res.json({ ok: true })
+})
+
+app.post('/api/apps/:id/files/unzip', async (req, res) => {
+  await files.unzip(requireApp(req).id, req.body?.path)
   res.json({ ok: true })
 })
 
 app.delete('/api/apps/:id/files', async (req, res) => {
-  await files.remove(requireApp(req).id, req.query.path)
+  const { record, backend } = fileScope(req, { write: true })
+  await backend.remove(record.id, req.query.path)
   res.json({ ok: true })
 })
 

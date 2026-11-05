@@ -159,6 +159,17 @@ try {
     const res = await call(`${files}?path=${encodeURIComponent(target)}`, { method: 'DELETE' })
     check(`корень не удаляется: "${target}"`, res.status === 400, JSON.stringify(res.body))
   }
+  for (const target of ['', '/', '.', 'a/../..', '../..']) {
+    const res = await call(`${files}?scope=code&path=${encodeURIComponent(target)}`, { method: 'DELETE' })
+    check(`корень кода не удаляется: "${target}"`, res.status === 400, JSON.stringify(res.body))
+  }
+  check('код цел', (await call(`${files}/content?scope=code&path=bot.py`)).body.text?.includes('bot alive'))
+  const update = new FormData()
+  update.set('path', '')
+  update.set('file', new Blob([zipOf({ 'added.txt': 'новое' })]), 'update.zip')
+  check('архив распакован поверх', (await call(`${files}/upload?scope=code`, { method: 'POST', body: update })).body.unpacked === true)
+  check('новый файл на месте', (await call(`${files}/content?scope=code&path=added.txt`)).body.text === 'новое')
+  check('старый файл остался', (await call(`${files}/content?scope=code&path=bot.py`)).status === 200)
   check('том цел', (await call(`${files}/content?path=keep.txt`)).body.text === 'важное')
   const escape = await call(`${files}/content?path=${encodeURIComponent('../../etc/hostname')}`)
   check('из тома не выйти', escape.status === 404, JSON.stringify(escape.body))

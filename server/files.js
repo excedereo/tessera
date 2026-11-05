@@ -193,6 +193,22 @@ export async function makeDir(id, relativeDir, name) {
   if (code !== 0) throw fail(409, /exists/i.test(output) ? 'Такое имя уже есть' : output.trim())
 }
 
+// Распаковка через временную папку: файлы получают владельца папки, а не root
+const UNZIP_SCRIPT = `d=$(dirname "$1")
+t="$d/.tessera-unzip"
+rm -rf "$t"
+mkdir "$t" && unzip -oq "$1" -d "$t" && chown -R "$(stat -c %u:%g -- "$d")" "$t" && cp -a "$t"/. "$d"/
+c=$?
+rm -rf "$t"
+exit $c`
+
+export async function unzip(id, relative) {
+  const target = resolvePath(relative)
+  if (!target.toLowerCase().endsWith('.zip')) throw fail(400, 'Это не zip')
+  const { code, output } = await run(id, UNZIP_SCRIPT, target)
+  if (code !== 0) throw fail(400, output.trim() || 'Не удалось распаковать')
+}
+
 export async function remove(id, relative) {
   const target = resolvePath(relative)
   if (target === ROOT) throw fail(400, 'Корень удалить нельзя')
