@@ -12,7 +12,7 @@ const SYSTEM_RESERVE_MB = 512
 
 export const containerName = id => `tessera-${id}`
 const imageTag = id => `tessera/${id}:latest`
-const volumeName = id => `tessera-${id}-data`
+export const volumeName = id => `tessera-${id}-data`
 
 export async function hostInfo() {
   const info = await docker.info()

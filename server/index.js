@@ -10,6 +10,7 @@ import AdmZip from 'adm-zip'
 import { WebSocketServer } from 'ws'
 import * as store from './store.js'
 import * as engine from './docker.js'
+import * as files from './files.js'
 
 const HOST = process.env.TESSERA_HOST || '127.0.0.1'
 const PORT = Number(process.env.TESSERA_PORT || 8030)
@@ -19,7 +20,7 @@ const MAX_UNPACKED = 1024 * 1024 * 1024
 const BUILD_LOG_LIMIT = 200_000
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
-const upload = multer({ dest: path.join(store.DATA_DIR, 'tmp'), limits: { fileSize: MAX_UPLOAD } })
+const upload = multer({ dest: path.join(store.DATA_DIR, 'tmp'), limits: { fileSize: MAX_UPLOAD }, defParamCharset: 'utf8' })
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -357,6 +358,45 @@ app.get('/api/apps/:id/build', (req, res) => {
   requireApp(req)
   const build = builds.get(req.params.id)
   res.json(build || { running: false, error: null, log: '' })
+})
+
+app.get('/api/apps/:id/files', async (req, res) => {
+  const record = requireApp(req)
+  res.json({ root: record.dataPath, entries: await files.list(record.id, req.query.path) })
+})
+
+app.get('/api/apps/:id/files/content', async (req, res) => {
+  res.json(await files.read(requireApp(req).id, req.query.path))
+})
+
+app.put('/api/apps/:id/files/content', async (req, res) => {
+  await files.writeText(requireApp(req).id, req.body?.path, req.body?.text ?? '')
+  res.json({ ok: true })
+})
+
+app.get('/api/apps/:id/files/download', async (req, res) => {
+  await files.download(requireApp(req).id, req.query.path, res)
+})
+
+app.post('/api/apps/:id/files/upload', upload.single('file'), async (req, res) => {
+  try {
+    const record = requireApp(req)
+    if (!req.file) throw new HttpError(400, 'Нужен файл')
+    await files.uploadFile(record.id, req.body.path, req.file.originalname, req.file.path)
+    res.json({ ok: true })
+  } finally {
+    if (req.file) fs.rmSync(req.file.path, { force: true })
+  }
+})
+
+app.post('/api/apps/:id/files/folder', async (req, res) => {
+  await files.makeDir(requireApp(req).id, req.body?.path, req.body?.name)
+  res.json({ ok: true })
+})
+
+app.delete('/api/apps/:id/files', async (req, res) => {
+  await files.remove(requireApp(req).id, req.query.path)
+  res.json({ ok: true })
 })
 
 app.delete('/api/apps/:id', async (req, res) => {

@@ -4,14 +4,19 @@
   "description": "Панель для VPS: делит ресурсы сервера между приложениями в Docker",
   "type": "module",
   "main": "server/index.js",
-  "scripts": { "start": "node server/index.js" },
-  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "adm-zip": "^0.5.16",
     "dockerode": "^4.0.7",
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "tar-fs": "^3.1.0",
+    "tar-stream": "^3.2.2",
     "ws": "^8.18.3"
   }
 }

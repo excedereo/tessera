@@ -152,6 +152,17 @@ try {
   })
   check('ws без входа закрыт', badWs === 'refused', badWs)
 
+  const files = '/api/apps/t-py/files'
+  const put = await call(`${files}/content`, { method: 'PUT', json: { path: 'keep.txt', text: 'важное' } })
+  check('файл записан', put.status === 200, JSON.stringify(put.body))
+  for (const target of ['', '/', '.', 'a/../..', '../..']) {
+    const res = await call(`${files}?path=${encodeURIComponent(target)}`, { method: 'DELETE' })
+    check(`корень не удаляется: "${target}"`, res.status === 400, JSON.stringify(res.body))
+  }
+  check('том цел', (await call(`${files}/content?path=keep.txt`)).body.text === 'важное')
+  const escape = await call(`${files}/content?path=${encodeURIComponent('../../etc/hostname')}`)
+  check('из тома не выйти', escape.status === 404, JSON.stringify(escape.body))
+
   for (const id of ['t-py', 't-node', 't-redis', 't-evil']) {
     const res = await call(`/api/apps/${id}`, { method: 'DELETE' })
     check(`удалено ${id}`, res.status === 200, JSON.stringify(res.body))

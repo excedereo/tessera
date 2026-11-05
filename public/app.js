@@ -134,6 +134,36 @@ function freeFor(id) {
   }
 }
 
+function askName(title, action) {
+  return new Promise(resolve => {
+    const box = $('confirm')
+    const input = el('input', { required: true, spellcheck: false, ariaLabel: 'Имя' })
+    box.replaceChildren(el('form', {
+      className: 'form',
+      onsubmit: event => {
+        event.preventDefault()
+        box.close()
+        resolve(input.value.trim())
+      },
+    },
+    el('h2', { textContent: title }),
+    input,
+    el('div', { className: 'dialog-actions' },
+      el('button', {
+        type: 'button',
+        textContent: 'Отмена',
+        onclick: () => {
+          box.close()
+          resolve(null)
+        },
+      }),
+      el('button', { className: 'primary', textContent: action }))))
+    box.oncancel = () => resolve(null)
+    box.showModal()
+    input.focus()
+  })
+}
+
 function askConfirm(title, text, action) {
   return new Promise(resolve => {
     const box = $('confirm')
@@ -340,13 +370,215 @@ function limitField({ label, min, step, max, value, unit, hint, onchange }) {
 const cpuHint = max => `Доступно до ${withCores(max)}`
 const ramHint = max => `Доступно до ${gb(max)}`
 
+function fileSize(bytes) {
+  if (bytes < 1024) return `${bytes} Б`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
+  return gb(bytes / 1024 / 1024)
+}
+
+function filesPanel(app) {
+  const url = `/api/apps/${app.id}/files`
+  const join = (base, name) => (base ? `${base}/${name}` : name)
+  const query = target => `?path=${encodeURIComponent(target)}`
+  let dir = ''
+  let loaded = false
+  let token = 0
+
+  const crumbs = el('div', { className: 'crumbs' })
+  const rows = el('div', { className: 'file-rows' })
+  const picker = el('input', { type: 'file', multiple: true, hidden: true })
+  const browser = el('div', { className: 'file-browser' })
+  const editor = el('div', { className: 'file-editor', hidden: true })
+
+  async function load(next = dir) {
+    const mine = ++token
+    dir = next
+    drawCrumbs()
+    rows.replaceChildren(el('p', { className: 'file-note', textContent: 'Загрузка' }))
+    try {
+      const { entries } = await api(`${url}${query(dir)}`)
+      if (mine !== token) return
+      loaded = true
+      rows.replaceChildren(...(entries.length
+        ? entries.map(fileRow)
+        : [el('p', { className: 'file-note', textContent: 'Папка пуста. Перетащи файлы сюда' })]))
+    } catch (err) {
+      if (mine !== token) return
+      rows.replaceChildren(el('p', { className: 'file-note', textContent: err.message }))
+    }
+  }
+
+  function drawCrumbs() {
+    const parts = dir ? dir.split('/') : []
+    crumbs.replaceChildren(
+      el('button', { className: 'quiet', textContent: app.dataPath, onclick: () => load('') }),
+      ...parts.flatMap((part, index) => [
+        el('span', { className: 'muted', textContent: '/' }),
+        el('button', { className: 'quiet', textContent: part, onclick: () => load(parts.slice(0, index + 1).join('/')) }),
+      ]))
+  }
+
+  function fileRow(entry) {
+    const target = join(dir, entry.name)
+    const isDir = entry.type === 'dir'
+    const open = el('button', {
+      className: 'file-name',
+      title: entry.name,
+      disabled: entry.type === 'link',
+      onclick: () => (isDir ? load(target) : openFile(target, entry)),
+    }, icon(isDir ? 'Folder2' : entry.type === 'link' ? 'Link2' : 'DocumentText'), el('span', { textContent: entry.name }))
+    const remove = el('button', {
+      className: 'icon-button',
+      title: 'Удалить',
+      ariaLabel: `Удалить ${entry.name}`,
+      onclick: async () => {
+        const text = isDir ? 'Папка удалится вместе со всем содержимым' : 'Вернуть файл будет нельзя'
+        if (!await askConfirm(`Удалить ${entry.name}?`, text, 'Удалить')) return
+        try {
+          await api(`${url}${query(target)}`, { method: 'DELETE' })
+          toast(`${entry.name} удалено`)
+          load()
+        } catch (err) {
+          toast(err.message, true)
+        }
+      },
+    }, icon('Trash'))
+    const download = entry.type === 'file'
+      ? el('a', { className: 'icon-link', href: `${url}/download${query(target)}`, title: 'Скачать', ariaLabel: `Скачать ${entry.name}` }, icon('Import'))
+      : el('span')
+    return el('div', { className: 'file-row' },
+      open,
+      el('span', { className: 'mono muted', textContent: isDir ? '' : fileSize(entry.size) }),
+      el('span', { className: 'mono muted', textContent: new Date(entry.mtime).toLocaleString('ru', { dateStyle: 'short', timeStyle: 'short' }) }),
+      download,
+      remove)
+  }
+
+  async function openFile(target, entry) {
+    let file
+    try {
+      file = await api(`${url}/content${query(target)}`)
+    } catch (err) {
+      return toast(err.message, true)
+    }
+    if (file.tooLarge) return toast(`Файл ${fileSize(file.size)} слишком большой для редактора, скачай его`, true)
+    if (file.binary) return toast('Это не текстовый файл, скачай его', true)
+
+    const area = el('textarea', { spellcheck: false, value: file.text, ariaLabel: entry.name })
+    const save = el('button', { className: 'primary', disabled: true, textContent: 'Сохранить' })
+    const close = async () => {
+      if (!save.disabled && !await askConfirm('Закрыть без сохранения?', 'Изменения в файле пропадут', 'Закрыть')) return
+      editor.hidden = true
+      browser.hidden = false
+      load()
+    }
+    const write = () => {
+      if (save.disabled) return
+      save.disabled = true
+      api(`${url}/content`, { method: 'PUT', json: { path: target, text: area.value } })
+        .then(() => toast('Файл сохранён. Приложение может прочитать его только после перезапуска'))
+        .catch(err => {
+          save.disabled = false
+          toast(err.message, true)
+        })
+    }
+    area.oninput = () => { save.disabled = false }
+    area.onkeydown = event => {
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyS') {
+        event.preventDefault()
+        write()
+      }
+    }
+    save.onclick = write
+    editor.replaceChildren(
+      el('div', { className: 'file-tools' },
+        el('span', { className: 'file-title mono', textContent: `${app.dataPath}/${target}`.replace('//', '/') }),
+        el('button', { className: 'quiet', textContent: 'Закрыть', onclick: close }),
+        save),
+      area)
+    browser.hidden = true
+    editor.hidden = false
+    area.focus()
+  }
+
+  async function uploadAll(list) {
+    for (const file of list) {
+      const data = new FormData()
+      data.set('path', dir)
+      data.set('file', file)
+      try {
+        await api(`${url}/upload`, { method: 'POST', body: data })
+        toast(`${file.name} загружено`)
+      } catch (err) {
+        toast(`${file.name}: ${err.message}`, true)
+      }
+    }
+    load()
+  }
+
+  picker.onchange = () => {
+    uploadAll([...picker.files])
+    picker.value = ''
+  }
+  browser.ondragover = event => {
+    event.preventDefault()
+    browser.classList.add('over')
+  }
+  browser.ondragleave = () => browser.classList.remove('over')
+  browser.ondrop = event => {
+    event.preventDefault()
+    browser.classList.remove('over')
+    uploadAll([...event.dataTransfer.files])
+  }
+
+  browser.append(
+    el('div', { className: 'file-tools' },
+      crumbs,
+      el('button', {
+        className: 'quiet',
+        onclick: async () => {
+          const name = await askName('Новая папка', 'Создать')
+          if (!name) return
+          try {
+            await api(`${url}/folder`, { json: { path: dir, name } })
+            load()
+          } catch (err) {
+            toast(err.message, true)
+          }
+        },
+      }, icon('FolderAdd'), 'Папка'),
+      el('button', { className: 'quiet', onclick: () => picker.click() }, icon('DocumentUpload'), 'Загрузить'),
+      picker),
+    rows)
+
+  return {
+    node: el('div', { className: 'file-pane', hidden: true }, browser, editor),
+    show() {
+      if (!loaded) load()
+    },
+  }
+}
+
 function mountApp(app) {
   const id = app.id
   const title = el('span', { className: 'head-note' })
   const mark = el('span')
   const actions = el('div', { className: 'actions' })
   const logs = el('div', { className: 'logs', tabIndex: 0 })
-  const logTitle = el('span', { className: 'title', textContent: 'Логи' })
+  const logTitle = el('span', { textContent: 'Логи' })
+  const fileView = filesPanel(app)
+  const logTab = el('button', { className: 'active' }, icon('CommandSquare'), logTitle)
+  const fileTab = el('button', {}, icon('FolderOpen'), 'Файлы')
+  const logPane = el('div', { className: 'log-pane' })
+  const showTab = files => {
+    logTab.classList.toggle('active', !files)
+    fileTab.classList.toggle('active', files)
+    logPane.hidden = files
+    fileView.node.hidden = !files
+    if (files) fileView.show()
+  }
+  logTab.onclick = () => showTab(false)
+  fileTab.onclick = () => showTab(true)
   const filter = el('input', { type: 'search', placeholder: 'Поиск', ariaLabel: 'Поиск по логам' })
   const follow = el('button', { className: 'quiet on', title: 'Автопрокрутка', ariaLabel: 'Автопрокрутка' }, icon('ArrowDown'))
   const log = { text: '', follow: true }
@@ -468,30 +700,34 @@ function mountApp(app) {
   const again = command('restart', 'Перезапустить', 'RotateRight')
   actions.append(start, stop, again, redeploy, remove)
 
+  logPane.append(
+    el('div', { className: 'log-tools' },
+      filter,
+      follow,
+      el('button', {
+        className: 'quiet',
+        title: 'Скопировать',
+        ariaLabel: 'Скопировать логи',
+        onclick: () => navigator.clipboard?.writeText(logs.textContent).then(() => toast('Логи скопированы')),
+      }, icon('Copy')),
+      el('button', {
+        className: 'quiet',
+        title: 'Очистить экран',
+        ariaLabel: 'Очистить экран',
+        onclick: () => {
+          log.text = ''
+          paintLogs()
+        },
+      }, icon('CloseCircle'))),
+    logs)
+
   $('page').replaceChildren(el('div', { className: 'page-inner' },
     el('header', { className: 'page-head' }, mark, el('h1', { textContent: app.name }), title, actions),
     el('div', { className: 'app-grid' },
       el('section', { className: 'card log-card' },
-        el('div', { className: 'log-tools' },
-          logTitle,
-          filter,
-          follow,
-          el('button', {
-            className: 'quiet',
-            title: 'Скопировать',
-            ariaLabel: 'Скопировать логи',
-            onclick: () => navigator.clipboard?.writeText(logs.textContent).then(() => toast('Логи скопированы')),
-          }, icon('Copy')),
-          el('button', {
-            className: 'quiet',
-            title: 'Очистить экран',
-            ariaLabel: 'Очистить экран',
-            onclick: () => {
-              log.text = ''
-              paintLogs()
-            },
-          }, icon('CloseCircle'))),
-        logs),
+        el('div', { className: 'tabs' }, logTab, fileTab),
+        fileView.node,
+        logPane),
       el('div', { className: 'side-stack' },
         el('section', { className: 'card' }, el('h2', {}, icon('Slider'), 'Порция'), usage, el('div', { style: 'height:16px' }), cpu.node, ram.node),
         el('section', { className: 'card' }, el('h2', {}, icon('Setting2'), 'Запуск'), form),
