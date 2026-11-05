@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tessera</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <form id="login" class="login" hidden>
+    <h1>Tessera</h1>
+    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" autofocus>
+    <button class="primary">Войти</button>
+    <p id="login-error" class="error"></p>
+  </form>
+
+  <main id="main" hidden>
+    <header>
+      <h1>Tessera</h1>
+      <span id="host" class="muted"></span>
+      <button id="add" class="primary">Добавить приложение</button>
+    </header>
+
+    <section class="portions">
+      <div class="portion-row"><span>CPU</span><div id="bar-cpu" class="bar"></div><span id="free-cpu" class="free"></span></div>
+      <div class="portion-row"><span>RAM</span><div id="bar-ram" class="bar"></div><span id="free-ram" class="free"></span></div>
+    </section>
+
+    <section id="apps" class="apps"></section>
+    <p id="empty" class="muted empty" hidden>Пока пусто. Добавь первое приложение, и сервер начнёт делиться на порции</p>
+  </main>
+
+  <aside id="detail" class="detail" hidden></aside>
+
+  <dialog id="create">
+    <form id="create-form" method="dialog">
+      <h2>Новое приложение</h2>
+      <div class="tabs" id="source-tabs">
+        <button type="button" data-source="upload" class="active">Архив</button>
+        <button type="button" data-source="git">Git</button>
+        <button type="button" data-source="image">Готовый образ</button>
+      </div>
+      <label>Имя<input name="name" placeholder="my-bot" required pattern="[a-z0-9][a-z0-9\-]{0,30}"></label>
+      <label data-for="upload">Zip-архив<input name="archive" type="file" accept=".zip"></label>
+      <label data-for="git" hidden>Ссылка на репозиторий<input name="gitUrl" placeholder="https://github.com/you/bot"></label>
+      <label data-for="image" hidden>Образ<input name="image" placeholder="redis:7-alpine"></label>
+      <div class="sliders">
+        <label>CPU <output id="cpu-out"></output><input name="cpus" type="range" min="0.05" step="0.05" value="0.25"></label>
+        <label>RAM <output id="ram-out"></output><input name="memoryMb" type="range" min="32" step="32" value="256"></label>
+      </div>
+      <details>
+        <summary>Дополнительно</summary>
+        <label>Команда запуска<input name="startCmd" placeholder="определится сама"></label>
+        <label data-not="image">Базовый образ, если проект не распознаётся<input name="baseImage" placeholder="eclipse-temurin:21-jre"></label>
+        <div class="pair">
+          <label>Порт приложения<input name="port" type="number" min="1" max="65535" placeholder="3000"></label>
+          <label>Внешний порт<input name="hostPort" type="number" min="1" max="65535" placeholder="не открывать"></label>
+        </div>
+        <label>Папка данных<input name="dataPath" value="/data"></label>
+        <label>Окружение, по строке KEY=value<textarea name="env" rows="3" spellcheck="false"></textarea></label>
+      </details>
+      <p id="create-error" class="error"></p>
+      <div class="actions">
+        <button type="button" id="create-cancel">Отмена</button>
+        <button class="primary">Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
