@@ -4,69 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tessera</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='6' height='6' rx='1.5' fill='%23e0913f'/%3E%3Crect x='9' y='1' width='6' height='6' rx='1.5' fill='%234f9d98'/%3E%3Crect x='1' y='9' width='6' height='6' rx='1.5' fill='%23777'/%3E%3Crect x='9' y='9' width='6' height='6' rx='1.5' fill='%23e0913f'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <form id="login" class="login" hidden>
-    <h1>Tessera</h1>
-    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" autofocus>
+    <div class="brand"><span class="logo"><i></i><i></i><i></i><i></i></span>Tessera</div>
+    <input id="password" type="password" placeholder="Пароль" aria-label="Пароль" autocomplete="current-password" autofocus>
     <button class="primary">Войти</button>
     <p id="login-error" class="error"></p>
   </form>
 
-  <main id="main" hidden>
-    <header>
-      <h1>Tessera</h1>
-      <span id="host" class="muted"></span>
-      <button id="add" class="primary">Добавить приложение</button>
-    </header>
+  <div id="shell" class="shell" hidden>
+    <nav class="sidebar">
+      <a class="brand" href="#/"><span class="logo"><i></i><i></i><i></i><i></i></span>Tessera</a>
+      <a id="nav-overview" class="nav-row" href="#/"></a>
+      <div class="nav-label"><span>Приложения</span><button id="add" class="icon-button" title="Добавить приложение" aria-label="Добавить приложение"></button></div>
+      <div id="nav-apps" class="nav-apps"></div>
+      <button id="logout" class="nav-row nav-bottom"></button>
+    </nav>
+    <main id="page" class="page"></main>
+  </div>
 
-    <section class="portions">
-      <div class="portion-row"><span>CPU</span><div id="bar-cpu" class="bar"></div><span id="free-cpu" class="free"></span></div>
-      <div class="portion-row"><span>RAM</span><div id="bar-ram" class="bar"></div><span id="free-ram" class="free"></span></div>
-    </section>
-
-    <section id="apps" class="apps"></section>
-    <p id="empty" class="muted empty" hidden>Пока пусто. Добавь первое приложение, и сервер начнёт делиться на порции</p>
-  </main>
-
-  <aside id="detail" class="detail" hidden></aside>
-
-  <dialog id="create">
-    <form id="create-form" method="dialog">
-      <h2>Новое приложение</h2>
-      <div class="tabs" id="source-tabs">
-        <button type="button" data-source="upload" class="active">Архив</button>
-        <button type="button" data-source="git">Git</button>
-        <button type="button" data-source="image">Готовый образ</button>
-      </div>
-      <label>Имя<input name="name" placeholder="my-bot" required pattern="[a-z0-9][a-z0-9\-]{0,30}"></label>
-      <label data-for="upload">Zip-архив<input name="archive" type="file" accept=".zip"></label>
-      <label data-for="git" hidden>Ссылка на репозиторий<input name="gitUrl" placeholder="https://github.com/you/bot"></label>
-      <label data-for="image" hidden>Образ<input name="image" placeholder="redis:7-alpine"></label>
-      <div class="sliders">
-        <label>CPU <output id="cpu-out"></output><input name="cpus" type="range" min="0.05" step="0.05" value="0.25"></label>
-        <label>RAM <output id="ram-out"></output><input name="memoryMb" type="range" min="32" step="32" value="256"></label>
-      </div>
-      <details>
-        <summary>Дополнительно</summary>
-        <label>Команда запуска<input name="startCmd" placeholder="определится сама"></label>
-        <label data-not="image">Базовый образ, если проект не распознаётся<input name="baseImage" placeholder="eclipse-temurin:21-jre"></label>
-        <div class="pair">
-          <label>Порт приложения<input name="port" type="number" min="1" max="65535" placeholder="3000"></label>
-          <label>Внешний порт<input name="hostPort" type="number" min="1" max="65535" placeholder="не открывать"></label>
-        </div>
-        <label>Папка данных<input name="dataPath" value="/data"></label>
-        <label>Окружение, по строке KEY=value<textarea name="env" rows="3" spellcheck="false"></textarea></label>
-      </details>
-      <p id="create-error" class="error"></p>
-      <div class="actions">
-        <button type="button" id="create-cancel">Отмена</button>
-        <button class="primary">Создать</button>
-      </div>
-    </form>
-  </dialog>
+  <dialog id="create"></dialog>
+  <dialog id="confirm" class="confirm"></dialog>
+  <div id="toasts" class="toasts" role="status"></div>
 
   <script src="app.js" type="module"></script>
 </body>
