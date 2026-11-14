@@ -1,3 +1,6 @@
+import { Terminal } from '/vendor/xterm/xterm.mjs'
+import { FitAddon } from '/vendor/addon-fit/addon-fit.mjs'
+import { Unicode11Addon } from '/vendor/addon-unicode11/addon-unicode11.mjs'
 import { ICONS } from './icons.js'
 
 const $ = id => document.getElementById(id)
@@ -84,6 +87,8 @@ function colorOf(id) {
 }
 
 const findApp = id => overview?.apps.find(a => a.id === id)
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]|\r(?!\n)/g
+const plain = text => text.replace(ANSI, '')
 
 function uptime(status) {
   const up = /^Up (.+?)(?: \(.*\))?$/.exec(status)
@@ -599,6 +604,181 @@ function filesPanel(app) {
   }
 }
 
+const TERMINAL_THEME = {
+  background: '#0f0f10',
+  foreground: '#dcdcde',
+  cursor: '#e0913f',
+  cursorAccent: '#0f0f10',
+  selectionBackground: 'rgba(224, 145, 63, 0.3)',
+  black: '#1c1c1e',
+  red: '#e5484d',
+  green: '#4cc38a',
+  yellow: '#e0b13f',
+  blue: '#6c8ebf',
+  magenta: '#b58ac9',
+  cyan: '#4f9d98',
+  white: '#dcdcde',
+  brightBlack: '#6e6e73',
+  brightRed: '#f2777b',
+  brightGreen: '#74d6a6',
+  brightYellow: '#f0c869',
+  brightBlue: '#93add6',
+  brightMagenta: '#cba8db',
+  brightCyan: '#79bdb8',
+  brightWhite: '#ffffff',
+}
+
+function consolePanel(app) {
+  const id = app.id
+  let mode = app.interactive ? 'attach' : 'shell'
+  let term = null
+  let fit = null
+  let socket = null
+  let observer = null
+  let visible = false
+
+  const screen = el('div', { className: 'term-screen' })
+  const status = el('span', { className: 'term-status' })
+  const reconnect = el('button', { className: 'quiet', hidden: true, onclick: () => connect() }, icon('Refresh2'), 'Подключиться')
+  const enable = el('button', {
+    className: 'primary',
+    onclick: () => busy(enable, async () => {
+      if (!await askConfirm('Включить интерактивный режим?', 'Контейнер пересоздастся, приложение перезапустится. Файлы в данных сохранятся', 'Включить')) return
+      await api(`/api/apps/${id}`, { method: 'PATCH', json: { interactive: true } })
+      toast('Интерактивный режим включён')
+      setTimeout(connect, 600)
+    }),
+  }, 'Включить')
+  const hint = el('div', { className: 'term-hint', hidden: true },
+    el('p', { textContent: 'Чтобы писать самому приложению и видеть его TUI, нужен интерактивный режим: контейнер получит терминал и ввод' }),
+    enable)
+  const modes = [['attach', 'Приложение'], ['shell', 'Оболочка']].map(([key, label]) => el('button', {
+    className: key === mode ? 'active' : '',
+    textContent: label,
+    title: key === 'attach' ? 'Ввод и вывод самого приложения' : 'Новая оболочка внутри контейнера',
+    onclick: () => {
+      if (mode === key) return
+      mode = key
+      for (const button of modes) button.classList.toggle('active', button.textContent === label)
+      connect()
+    },
+  }))
+
+  function send(message) {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+  }
+
+  function fitNow() {
+    if (!term || !visible || !screen.clientWidth) return
+    fit.fit()
+  }
+
+  function ensureTerm() {
+    if (term) return
+    term = new Terminal({
+      allowProposedApi: true,
+      cursorBlink: true,
+      fontFamily: '"Cascadia Mono", "Cascadia Code", ui-monospace, Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.15,
+      scrollback: 5000,
+      theme: TERMINAL_THEME,
+    })
+    fit = new FitAddon()
+    term.loadAddon(fit)
+    term.loadAddon(new Unicode11Addon())
+    term.unicode.activeVersion = '11'
+    term.open(screen)
+    term.onData(data => send({ t: 'in', d: data }))
+    term.onResize(({ cols, rows }) => send({ t: 'resize', cols, rows }))
+    term.attachCustomKeyEventHandler(event => {
+      if (event.type !== 'keydown') return true
+      const mod = event.ctrlKey || event.metaKey
+      // Ctrl+C копирует выделенное, без выделения уходит в программу как прерывание
+      if (mod && event.code === 'KeyC' && term.hasSelection()) {
+        navigator.clipboard?.writeText(term.getSelection())
+        term.clearSelection()
+        return false
+      }
+      // Ctrl+V отдаём браузеру: он вставит текст, и терминал передаст его как вставку
+      if (mod && event.code === 'KeyV') return false
+      return true
+    })
+    observer = new ResizeObserver(() => requestAnimationFrame(fitNow))
+    observer.observe(screen)
+  }
+
+  function connect() {
+    socket?.close()
+    socket = null
+    reconnect.hidden = true
+    const current = findApp(id)
+    const needsMode = mode === 'attach' && !current?.interactive
+    hint.hidden = !needsMode
+    screen.hidden = needsMode
+    if (needsMode) {
+      status.textContent = ''
+      return
+    }
+    ensureTerm()
+    term.reset()
+    fitNow()
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+    const next = new WebSocket(`${scheme}://${location.host}/ws/${mode}/${id}?cols=${term.cols}&rows=${term.rows}`)
+    next.binaryType = 'arraybuffer'
+    status.textContent = 'Подключение'
+    // Без ответа сервера браузер может держать сокет в подключении бесконечно
+    const timer = setTimeout(() => {
+      if (socket !== next || next.readyState !== WebSocket.CONNECTING) return
+      socket = null
+      next.close()
+      status.textContent = 'Не удалось подключиться'
+      reconnect.hidden = false
+    }, 8000)
+    next.onopen = () => {
+      clearTimeout(timer)
+      status.textContent = mode === 'attach' ? 'Подключено к приложению' : 'Оболочка открыта'
+      term.focus()
+    }
+    next.onmessage = event => term.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data))
+    next.onclose = () => {
+      clearTimeout(timer)
+      if (socket !== next) return
+      status.textContent = 'Отключено'
+      reconnect.hidden = false
+    }
+    socket = next
+  }
+
+  return {
+    node: el('div', { className: 'term-pane', hidden: true },
+      el('div', { className: 'file-tools' },
+        el('div', { className: 'scope-tabs' }, ...modes),
+        status,
+        reconnect),
+      hint,
+      screen),
+    show() {
+      visible = true
+      if (!socket) connect()
+      else requestAnimationFrame(() => {
+        fitNow()
+        term?.focus()
+      })
+    },
+    hide() {
+      visible = false
+    },
+    dispose() {
+      const last = socket
+      socket = null
+      last?.close()
+      observer?.disconnect()
+      term?.dispose()
+    },
+  }
+}
+
 function mountApp(app) {
   const id = app.id
   const title = el('span', { className: 'head-note' })
@@ -609,25 +789,33 @@ function mountApp(app) {
   const fileView = filesPanel(app)
   const logTab = el('button', { className: 'active' }, icon('CommandSquare'), logTitle)
   const fileTab = el('button', {}, icon('FolderOpen'), 'Файлы')
+  const consoleView = consolePanel(app)
+  const consoleTab = el('button', {}, icon('Code'), 'Консоль')
   const logPane = el('div', { className: 'log-pane' })
-  const showTab = files => {
-    logTab.classList.toggle('active', !files)
-    fileTab.classList.toggle('active', files)
-    logPane.hidden = files
-    fileView.node.hidden = !files
-    if (files) fileView.show()
+  const showTab = name => {
+    logTab.classList.toggle('active', name === 'logs')
+    fileTab.classList.toggle('active', name === 'files')
+    consoleTab.classList.toggle('active', name === 'console')
+    logPane.hidden = name !== 'logs'
+    fileView.node.hidden = name !== 'files'
+    consoleView.node.hidden = name !== 'console'
+    if (name === 'files') fileView.show()
+    if (name === 'console') consoleView.show()
+    else consoleView.hide()
   }
-  logTab.onclick = () => showTab(false)
-  fileTab.onclick = () => showTab(true)
+  logTab.onclick = () => showTab('logs')
+  fileTab.onclick = () => showTab('files')
+  consoleTab.onclick = () => showTab('console')
   const filter = el('input', { type: 'search', placeholder: 'Поиск', ariaLabel: 'Поиск по логам' })
   const follow = el('button', { className: 'quiet on', title: 'Автопрокрутка', ariaLabel: 'Автопрокрутка' }, icon('ArrowDown'))
   const log = { text: '', follow: true }
 
   const paintLogs = () => {
     const query = filter.value.trim().toLowerCase()
+    const text = plain(log.text)
     logs.textContent = query
-      ? log.text.split('\n').filter(line => line.toLowerCase().includes(query)).join('\n')
-      : log.text
+      ? text.split('\n').filter(line => line.toLowerCase().includes(query)).join('\n')
+      : text
     if (log.follow) logs.scrollTop = logs.scrollHeight
   }
   filter.oninput = paintLogs
@@ -667,6 +855,7 @@ function mountApp(app) {
     value: Object.entries(app.env).map(([key, value]) => `${key}=${value}`).join('\n'),
   })
   const restart = el('input', { type: 'checkbox', checked: app.restart })
+  const interactive = el('input', { type: 'checkbox', checked: Boolean(app.interactive) })
   const save = el('button', { type: 'submit', disabled: true }, 'Сохранить и пересоздать')
   const form = el('form', {
     className: 'form',
@@ -676,7 +865,7 @@ function mountApp(app) {
       busy(save, async () => {
         await api(`/api/apps/${id}`, {
           method: 'PATCH',
-          json: { env: env.value, startCmd: startCmd.value, restart: restart.checked, port: port.value, hostPort: hostPort.value },
+          json: { env: env.value, startCmd: startCmd.value, restart: restart.checked, interactive: interactive.checked, port: port.value, hostPort: hostPort.value },
         })
         toast('Настройки сохранены')
         connectLogs(id, log, paintLogs)
@@ -689,6 +878,7 @@ function mountApp(app) {
     el('label', { className: 'field' }, 'Внешний порт', hostPort)),
   el('label', { className: 'field' }, 'Окружение', env),
   el('label', { className: 'check' }, restart, 'Перезапускать при падении'),
+  el('label', { className: 'check', title: 'Терминал и ввод для приложения: TUI, input(), команды серверу' }, interactive, 'Интерактивный режим'),
   save)
 
   const [sourceName] = SOURCES[app.source]
@@ -754,15 +944,16 @@ function mountApp(app) {
     el('header', { className: 'page-head' }, mark, el('h1', { textContent: app.name }), title, actions),
     el('div', { className: 'app-grid' },
       el('section', { className: 'card log-card' },
-        el('div', { className: 'tabs' }, logTab, fileTab),
+        el('div', { className: 'tabs' }, logTab, fileTab, consoleTab),
         fileView.node,
+        consoleView.node,
         logPane),
       el('div', { className: 'side-stack' },
         el('section', { className: 'card' }, el('h2', {}, icon('Slider'), 'Порция'), usage, el('div', { style: 'height:16px' }), cpu.node, ram.node),
         el('section', { className: 'card' }, el('h2', {}, icon('Setting2'), 'Запуск'), form),
         el('section', { className: 'card' }, el('h2', {}, icon('FolderOpen'), 'Источник'), facts)))))
 
-  view = { id, title, mark, cpu, ram, usage, start, stop, again, redeploy, log, logTitle, paintLogs, lastState: null }
+  view = { id, title, mark, cpu, ram, usage, start, stop, again, redeploy, log, logTitle, paintLogs, lastState: null, dispose: () => consoleView.dispose() }
   if (app.state === 'building' || app.state === 'failed') showBuild(id, log, paintLogs, logTitle)
   else connectLogs(id, log, paintLogs)
 }
@@ -878,6 +1069,7 @@ function openCreate() {
   const hostPort = el('input', { type: 'number', min: 1, max: 65535, placeholder: 'закрыт' })
   const dataPath = el('input', { value: '/data', spellcheck: false })
   const env = el('textarea', { rows: 3, spellcheck: false, placeholder: 'TOKEN=abc' })
+  const interactive = el('input', { type: 'checkbox' })
 
   const segments = Object.entries(SOURCES).map(([key, [label, iconName]]) => el('button', {
     type: 'button',
@@ -916,6 +1108,7 @@ function openCreate() {
         hostPort: hostPort.value,
         dataPath: dataPath.value,
         env: env.value,
+        interactive: interactive.checked,
       }
       for (const [key, value] of Object.entries(fields)) data.set(key, value)
       if (source === 'upload') data.set('archive', archive)
@@ -948,7 +1141,8 @@ function openCreate() {
         el('label', { className: 'field' }, 'Порт приложения', port),
         el('label', { className: 'field' }, 'Внешний порт', hostPort)),
       el('label', { className: 'field' }, 'Папка данных', dataPath),
-      el('label', { className: 'field' }, 'Окружение', env))),
+      el('label', { className: 'field' }, 'Окружение', env),
+      el('label', { className: 'check' }, interactive, 'Интерактивный режим: терминал и ввод для приложения'))),
   error,
   el('div', { className: 'dialog-actions' },
     el('button', { type: 'button', textContent: 'Отмена', onclick: () => box.close() }),
@@ -964,6 +1158,7 @@ function parseRoute() {
 }
 
 function mount() {
+  view?.dispose?.()
   logSocket?.close()
   logSocket = null
   route = parseRoute()
@@ -991,6 +1186,8 @@ async function refresh() {
   } catch (err) {
     if (err.status === 401) {
       overview = null
+      view?.dispose?.()
+      view = null
       logSocket?.close()
       $('shell').hidden = true
       $('login').hidden = false

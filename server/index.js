@@ -11,6 +11,7 @@ import * as store from './store.js'
 import * as engine from './docker.js'
 import * as files from './files.js'
 import * as code from './code.js'
+import * as terminal from './terminal.js'
 
 const HOST = process.env.TESSERA_HOST || '127.0.0.1'
 const PORT = Number(process.env.TESSERA_PORT || 8030)
@@ -62,6 +63,10 @@ const app = express()
 app.disable('x-powered-by')
 app.use(express.json({ limit: '1mb' }))
 app.use(express.static(publicDir))
+for (const name of ['xterm', 'addon-fit', 'addon-unicode11']) {
+  const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '@xterm', name)
+  app.use(`/vendor/${name}`, express.static(path.join(dir, 'lib')), express.static(path.join(dir, 'css')))
+}
 
 app.post('/api/login', (req, res) => {
   if (!loginAllowed(req.ip)) throw new HttpError(429, 'Слишком много попыток, подожди минуту')
@@ -244,6 +249,7 @@ app.post('/api/apps', upload.single('archive'), async (req, res) => {
       cpus: Number(body.cpus),
       memoryMb: Number(body.memoryMb),
       restart: body.restart !== 'false',
+      interactive: body.interactive === 'true',
       createdAt: new Date().toISOString(),
     }
     if (record.hostPort && !record.port) throw new HttpError(400, 'Внешний порт требует порта приложения')
@@ -276,6 +282,7 @@ app.patch('/api/apps/:id', async (req, res) => {
   if (body.env !== undefined) next.env = parseEnv(body.env)
   if (body.startCmd !== undefined) next.startCmd = String(body.startCmd).trim() || null
   if (body.restart !== undefined) next.restart = Boolean(body.restart)
+  if (body.interactive !== undefined) next.interactive = Boolean(body.interactive)
   if (body.port !== undefined) next.port = parsePort(body.port, 'Порт приложения')
   if (body.hostPort !== undefined) next.hostPort = parsePort(body.hostPort, 'Внешний порт')
   if (next.hostPort && !next.port) throw new HttpError(400, 'Внешний порт требует порта приложения')
@@ -283,7 +290,7 @@ app.patch('/api/apps/:id', async (req, res) => {
   await checkLimits(next, next.id)
 
   const container = (await engine.states()).get(next.id)
-  const recreate = ['startCmd', 'restart', 'port', 'hostPort'].some(key => next[key] !== record[key])
+  const recreate = ['startCmd', 'restart', 'interactive', 'port', 'hostPort'].some(key => next[key] !== record[key])
     || JSON.stringify(next.env) !== JSON.stringify(record.env)
 
   store.putApp(next)
@@ -415,21 +422,27 @@ const wss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost')
-  const id = /^\/ws\/logs\/([a-z0-9-]+)$/.exec(url.pathname)?.[1]
+  const [, kind, id] = /^\/ws\/(logs|shell|attach)\/([a-z0-9-]+)$/.exec(url.pathname) || []
   const sameOrigin = req.headers.origin && new URL(req.headers.origin).host === req.headers.host
   if (!id || !store.getApp(id) || !sameOrigin || !authorized(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
     return socket.destroy()
   }
-  wss.handleUpgrade(req, socket, head, ws => streamLogs(ws, id))
+  wss.handleUpgrade(req, socket, head, ws => {
+    if (kind === 'logs') streamLogs(ws, id)
+    else terminal.connect(ws, id, kind, url.searchParams.get('cols'), url.searchParams.get('rows'))
+  })
 })
 
 async function streamLogs(ws, id) {
   try {
     const container = engine.docker.getContainer(engine.containerName(id))
+    const { Config } = await container.inspect()
     const stream = await container.logs({ follow: true, stdout: true, stderr: true, tail: 300 })
     const send = { write: chunk => ws.readyState === ws.OPEN && ws.send(chunk.toString()) }
-    engine.docker.modem.demuxStream(stream, send, send)
+    // С терминалом Docker отдаёт вывод одним потоком, без разметки stdout и stderr
+    if (Config.Tty) stream.on('data', send.write)
+    else engine.docker.modem.demuxStream(stream, send, send)
     stream.on('end', () => ws.close())
     ws.on('close', () => stream.destroy())
   } catch (err) {

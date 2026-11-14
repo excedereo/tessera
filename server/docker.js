@@ -9,6 +9,7 @@ export const docker = new Docker()
 const LABEL = 'tessera.app'
 const GENERATED_DOCKERFILE = '.tessera.Dockerfile'
 const SYSTEM_RESERVE_MB = 512
+export const TERMINAL_ENV = ['TERM=xterm-256color', 'COLORTERM=truecolor', 'LANG=C.UTF-8']
 
 export const containerName = id => `tessera-${id}`
 const imageTag = id => `tessera/${id}:latest`
@@ -71,15 +72,23 @@ export async function removeContainer(id) {
 export async function createAndStart(app) {
   await removeContainer(app.id)
   const port = app.port && `${app.port}/tcp`
+  const env = Object.entries(app.env).map(([key, value]) => `${key}=${value}`)
+  // Свои переменные приложения важнее терминальных по умолчанию
+  const terminalEnv = app.interactive ? TERMINAL_ENV.filter(line => !(line.split('=')[0] in app.env)) : []
   const container = await docker.createContainer({
     name: containerName(app.id),
     Image: app.image,
-    Env: Object.entries(app.env).map(([key, value]) => `${key}=${value}`),
+    Env: [...terminalEnv, ...env],
     Labels: { [LABEL]: app.id },
     ...(app.startCmd ? { Entrypoint: ['sh', '-c'], Cmd: [app.startCmd] } : {}),
     ...(port ? { ExposedPorts: { [port]: {} } } : {}),
+    ...(app.interactive ? { Tty: true, OpenStdin: true, StdinOnce: false, AttachStdin: true } : {}),
     HostConfig: {
       ...limitsFor(app),
+      // init убирает зомби-процессы и передаёт приложению SIGTERM при остановке
+      Init: true,
+      // Без начального размера терминал 0×0, пока к нему никто не подключился
+      ...(app.interactive ? { ConsoleSize: [32, 120] } : {}),
       PidsLimit: 512,
       SecurityOpt: ['no-new-privileges'],
       RestartPolicy: { Name: app.restart ? 'unless-stopped' : 'no' },
